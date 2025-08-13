@@ -1,9 +1,11 @@
 import Groq from 'groq-sdk';
+import AppError from '../utils/AppError.js';
+import { ERROR_CODES, ERROR_MESSAGES } from '../utils/errorCodes.js';
 
 class GroqService {
   constructor() {
     if (!process.env.GROQ_API_KEY) {
-      throw new Error('GROQ_API_KEY is required');
+      throw new AppError('GROQ_API_KEY is required', 500, ERROR_CODES.SERVER_ERROR);
     }
     this.groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
     this.model = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
@@ -15,22 +17,42 @@ class GroqService {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const prompt = this.buildRoutePrompt(destination, tripType);
+        const prompt = this.buildRoutePrompt(destination, tripType, attempt > 1 ? lastError : null);
         const jsonResponse = await this.callLLMForJSON(prompt, attempt > 1);
         const parsed = this.parseAndValidateJSON(jsonResponse, tripType);
         return parsed;
       } catch (error) {
         lastError = error;
-        console.warn(`Attempt ${attempt} failed:`, error.message);
         if (attempt === maxAttempts) {
-          throw new Error(`Failed to generate valid route after ${maxAttempts} attempts: ${lastError.message}`);
+          throw new AppError(
+            `Failed to generate valid route after ${maxAttempts} attempts: ${lastError.message}`, 
+            500, 
+            ERROR_CODES.TRIP_GENERATION_FAILED
+          );
         }
       }
     }
   }
 
-  buildRoutePrompt(destination, tripType) {
+  buildRoutePrompt(destination, tripType, previousError = null) {
+    let errorGuidance = '';
+    if (previousError && previousError.includes('routable point')) {
+      errorGuidance = `
+        CRITICAL ROUTING REQUIREMENTS - Previous attempt failed due to non-routable coordinates:
+        - ONLY use coordinates that are in the city
+        - ONLY use coordinates that are ON roads, trails, paths, or streets
+        - AVOID coordinates in: water bodies, buildings, private property, mountains peaks without trails
+        - For cities: use coordinates near main streets, public squares, train stations, bus stops
+        - For nature areas: use coordinates at trailheads, parking areas, official trail markers
+        - For hiking: use established trail coordinates, not random mountain coordinates
+        - For cycling: use bike paths, roads, or designated cycling routes
+        - Coordinates must be accessible by foot/bike from nearby roads or paths
+        - Test each coordinate: could someone actually walk/bike TO this exact spot?`;
+    }
+
     const basePrompt = `Generate a ${tripType} route plan for "${destination}".
+
+${errorGuidance}
 
 First, determine the specific city and country for this destination = ${destination}.
 Then create routes starting from coordinates the center of this destination = ${destination}.
@@ -38,10 +60,20 @@ NEVER make route shorter than 5 km - MUST.
 NEVER make route longer than 15 km - MUST.
 CHECK your output that every route is more than 5 km, if it is less than 5 km, make it longer or find a new route.
 CHECK your output that every route is less than 15 km, if it is more than 15 km, make it shorter or find a new route.
-MUST use coordinates on land with road/path access.
+- ONLY use coordinates that are in the city
+        - ONLY use coordinates that are ON roads, trails, paths, or streets
+        - AVOID coordinates in: water bodies, buildings, private property, mountains peaks without trails
 MUST find routes that are realistic and safe for the specified trip type.
 coordinates should be in the format [lng, lat], 6 decimal places for precision.
 Each route must have a start point, end point, and optional waypoints.
+
+ROUTING SAFETY REQUIREMENTS:
+- Use coordinates that are on established roads, paths, or trails
+- For urban areas: use street intersections, public spaces, transport hubs
+- For natural areas: use official trailheads, visitor centers, designated trail points
+- Ensure all coordinates are accessible on foot or by bike
+- Avoid water bodies, private property, cliff edges, or inaccessible terrain
+
 Return the full trip in valid JSON format with the following structure:
 Output ONLY valid JSON matching this exact schema with no additional text:
 {
@@ -108,70 +140,63 @@ CYCLING REQUIREMENTS:
       const response = completion.choices?.[0]?.message?.content;
       
       if (!response) {
-        console.error('Empty response from GROQ API');
-        throw new Error('No response from LLM');
+        throw new AppError(ERROR_MESSAGES[ERROR_CODES.EXTERNAL_SERVICE_ERROR], 503, ERROR_CODES.EXTERNAL_SERVICE_ERROR);
       }
 
-      console.log(`LLM Response length: ${response.length} characters`);
-      
       return response;
     } catch (error) {
-      console.error('GROQ API call failed:', error);
-      throw error;
+      if (error instanceof AppError) {
+        throw error;
+      }
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.EXTERNAL_SERVICE_ERROR], 503, ERROR_CODES.EXTERNAL_SERVICE_ERROR);
     }
   }
 
   parseAndValidateJSON(jsonString, expectedTripType) {
-    // Extract JSON from response
     const cleanedJSON = this.extractJSON(jsonString);
     
     let parsed;
     try {
       parsed = JSON.parse(cleanedJSON);
     } catch (error) {
-      throw new Error(`Invalid JSON format: ${error.message}`);
+      throw new AppError(`Invalid JSON format: ${error.message}`, 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
-    // Validate city
     if (!parsed.city || typeof parsed.city !== 'string' || !parsed.city.includes(',')) {
-      throw new Error('Invalid or missing city in format "City, Country"');
+      throw new AppError('Invalid or missing city in format "City, Country"', 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
-    // Validate structure
     if (!parsed.tripType || parsed.tripType !== expectedTripType) {
-      throw new Error(`Invalid tripType: expected ${expectedTripType}, got ${parsed.tripType}`);
+      throw new AppError(`Invalid tripType: expected ${expectedTripType}, got ${parsed.tripType}`, 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
     if (!Number.isInteger(parsed.estimatedDays) || parsed.estimatedDays < 1) {
-      throw new Error('Invalid estimatedDays');
+      throw new AppError('Invalid estimatedDays', 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
     if (!Array.isArray(parsed.routes) || parsed.routes.length !== parsed.estimatedDays) {
-      throw new Error(`Routes array must have ${parsed.estimatedDays} elements`);
+      throw new AppError(`Routes array must have ${parsed.estimatedDays} elements`, 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
-    // Validate trip type specific constraints
     if (expectedTripType === 'trek') {
       if (parsed.estimatedDays < 1 || parsed.estimatedDays > 5) {
-        throw new Error('Trek must be 1-5 days');
+        throw new AppError('Trek must be 1-5 days', 400, ERROR_CODES.VALIDATION_ERROR);
       }
       
-      // Validate overall circular for trek
       const firstDay = parsed.routes[0];
       const lastDay = parsed.routes[parsed.routes.length - 1];
       if (!firstDay.startPoint || !lastDay.endPoint) {
-        throw new Error('Missing start/end points for trek validation');
+        throw new AppError('Missing start/end points for trek validation', 400, ERROR_CODES.VALIDATION_ERROR);
       }
     } else if (expectedTripType === 'cycling') {
       if (parsed.estimatedDays !== 2) {
-        throw new Error('Cycling must be exactly 2 days');
+        throw new AppError('Cycling must be exactly 2 days', 400, ERROR_CODES.VALIDATION_ERROR);
       }
     }
 
-    // Validate and normalize routes
     const routes = parsed.routes.map((route, index) => {
       if (!route.startPoint || !route.endPoint) {
-        throw new Error(`Route day ${index + 1} missing start/end point`);
+        throw new AppError(`Route day ${index + 1} missing start/end point`, 400, ERROR_CODES.VALIDATION_ERROR);
       }
 
       return {
@@ -196,18 +221,18 @@ CYCLING REQUIREMENTS:
 
   validatePoint(point) {
     if (!point || typeof point !== 'object') {
-      throw new Error('Invalid point object');
+      throw new AppError('Invalid point object', 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
     const lat = Number(point.lat);
     const lng = Number(point.lng);
 
     if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
-      throw new Error(`Invalid latitude: ${point.lat}`);
+      throw new AppError(`Invalid latitude: ${point.lat}`, 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
     if (!Number.isFinite(lng) || lng < -180 || lng > 180) {
-      throw new Error(`Invalid longitude: ${point.lng}`);
+      throw new AppError(`Invalid longitude: ${point.lng}`, 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
     return {
@@ -218,15 +243,13 @@ CYCLING REQUIREMENTS:
   }
 
   extractJSON(text) {
-    // Remove markdown code blocks if present
     let cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
     
-    // Find first { and last }
     const start = cleaned.indexOf('{');
     const end = cleaned.lastIndexOf('}');
     
     if (start === -1 || end === -1 || end <= start) {
-      throw new Error('No valid JSON object found in response');
+      throw new AppError('No valid JSON object found in response', 400, ERROR_CODES.VALIDATION_ERROR);
     }
     
     return cleaned.slice(start, end + 1);

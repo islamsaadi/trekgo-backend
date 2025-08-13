@@ -2,6 +2,9 @@ import groqService from './groqService.js';
 import orsService from './orsService.js';
 import imageService from './imageService.js';
 import constraintService from './constraintService.js';
+import coordinateService from './coordinateService.js';
+import AppError from '../utils/AppError.js';
+import { ERROR_CODES, ERROR_MESSAGES } from '../utils/errorCodes.js';
 
 class LLMService {
 
@@ -10,6 +13,16 @@ class LLMService {
     // Step 1: Generate route structure from LLM (includes city determination)
     const llmRouteData = await groqService.generateRoutePoints(destination, tripType);
     const specificCity = llmRouteData.city;
+    console.log(`LLM determined city: ${specificCity} for destination: ${destination}`);
+    
+    if (!specificCity) {
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.CITY_NOT_FOUND], 404, ERROR_CODES.CITY_NOT_FOUND);
+    }
+
+    // Validate trip type
+    if (!['trek', 'cycling'].includes(tripType)) {
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.INVALID_TRIP_TYPE], 400, ERROR_CODES.INVALID_TRIP_TYPE);
+    }
 
     // Step 2: Build real routes using ORS for each day
     const routes = await this.buildRealRoutes(llmRouteData.routes, tripType, specificCity);
@@ -56,42 +69,98 @@ class LLMService {
     
     for (const routeData of llmRoutes) {
       if (!routeData.startPoint || !routeData.endPoint) {
-        throw new Error(`Day ${routeData.day}: Missing start or end point`);
+        throw new AppError(`Day ${routeData.day}: Missing start or end point`, 400, ERROR_CODES.VALIDATION_ERROR);
       }
 
-      // Build coordinate array for ORS
-      const coordinates = [
+      let coordinates = [
         [routeData.startPoint.lng, routeData.startPoint.lat],
         ...(routeData.waypoints || []).map(w => [w.lng, w.lat]),
         [routeData.endPoint.lng, routeData.endPoint.lat]
       ];
 
-      // Get ORS profile based on trip type
       const profile = tripType === 'trek' ? 'foot-walking' : 'cycling-regular';
       
-      // Fetch real route from ORS
-      const orsRoute = await orsService.fetchRoute({
-        coordinates,
-        profile,
-        cityName
-      });
+      try {
+        const orsRoute = await orsService.fetchRoute({
+          coordinates,
+          profile,
+          cityName
+        });
 
-      routes.push({
-        day: routeData.day,
-        distance: orsRoute.distance,
-        duration: orsRoute.duration,
-        startPoint: routeData.startPoint,
-        endPoint: routeData.endPoint,
-        waypoints: routeData.waypoints || [],
-        coordinates: orsRoute.coordinates,
-        geometry: orsRoute.geometry,
-        description: routeData.description,
-        elevation: orsRoute.summary,
-        instructions: orsRoute.instructions || []
-      });
+        routes.push({
+          day: routeData.day,
+          distance: orsRoute.distance,
+          duration: orsRoute.duration,
+          startPoint: routeData.startPoint,
+          endPoint: routeData.endPoint,
+          waypoints: routeData.waypoints || [],
+          coordinates: orsRoute.coordinates,
+          geometry: orsRoute.geometry,
+          description: routeData.description,
+          elevation: orsRoute.summary,
+          instructions: orsRoute.instructions || []
+        });
+
+      } catch (error) {
+        console.error(`Error processing route for day ${routeData.day}:`, error);
+        if (error.message.includes('routable point')) {
+          
+          const fixedCoordinates = await this.fixNonRoutableCoordinates(coordinates, cityName, profile);
+          
+          try {
+            const orsRoute = await orsService.fetchRoute({
+              coordinates: fixedCoordinates,
+              profile,
+              cityName
+            });
+
+            const [startLng, startLat] = fixedCoordinates[0];
+            const [endLng, endLat] = fixedCoordinates[fixedCoordinates.length - 1];
+
+            routes.push({
+              day: routeData.day,
+              distance: orsRoute.distance,
+              duration: orsRoute.duration,
+              startPoint: { lat: startLat, lng: startLng, name: routeData.startPoint.name },
+              endPoint: { lat: endLat, lng: endLng, name: routeData.endPoint.name },
+              waypoints: fixedCoordinates.slice(1, -1).map((coord, i) => ({
+                lat: coord[1],
+                lng: coord[0],
+                name: (routeData.waypoints && routeData.waypoints[i] && routeData.waypoints[i].name) || `Waypoint ${i + 1}`
+              })),
+              coordinates: orsRoute.coordinates,
+              geometry: orsRoute.geometry,
+              description: routeData.description,
+              elevation: orsRoute.summary,
+              instructions: orsRoute.instructions || []
+            });
+          } catch (retryError) {
+            throw new AppError(ERROR_MESSAGES[ERROR_CODES.TRIP_GENERATION_FAILED], 500, ERROR_CODES.TRIP_GENERATION_FAILED);
+          }
+
+        } else {
+          throw error;
+        }
+      }
     }
 
     return routes;
+  }
+
+  async fixNonRoutableCoordinates(coordinates, cityName, profile) {
+    const fixedCoordinates = [];
+    
+    for (const coord of coordinates) {
+      try {
+        const routableCoord = await coordinateService.findRoutableCoordinates(coord, cityName, profile);
+        fixedCoordinates.push(routableCoord);
+      } catch (error) {
+        const cityCenter = await coordinateService.geocodeCityCenter(cityName);
+        fixedCoordinates.push(cityCenter);
+      }
+    }
+    
+    return fixedCoordinates;
   }
 
   async processTrekRoutes(routes, llmRouteData) {
