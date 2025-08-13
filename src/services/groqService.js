@@ -36,7 +36,8 @@ class GroqService {
 
   buildRoutePrompt(destination, tripType, previousError = null) {
     let errorGuidance = '';
-    if (previousError && previousError.includes('routable point')) {
+    console.log("previousError:", previousError?.message);
+    if (previousError && previousError.message.includes('routable point')) {
       errorGuidance = `
         CRITICAL ROUTING REQUIREMENTS - Previous attempt failed due to non-routable coordinates:
         - ONLY use coordinates that are in the city
@@ -61,8 +62,8 @@ NEVER make route longer than 15 km - MUST.
 CHECK your output that every route is more than 5 km, if it is less than 5 km, make it longer or find a new route.
 CHECK your output that every route is less than 15 km, if it is more than 15 km, make it shorter or find a new route.
 - ONLY use coordinates that are in the city
-        - ONLY use coordinates that are ON roads, trails, paths, or streets
-        - AVOID coordinates in: water bodies, buildings, private property, mountains peaks without trails
+- ONLY use coordinates that are ON roads, trails, paths, or streets
+- AVOID coordinates in: water bodies, buildings, private property, mountains peaks without trails
 MUST find routes that are realistic and safe for the specified trip type.
 coordinates should be in the format [lng, lat], 6 decimal places for precision.
 Each route must have a start point, end point, and optional waypoints.
@@ -153,6 +154,7 @@ CYCLING REQUIREMENTS:
   }
 
   parseAndValidateJSON(jsonString, expectedTripType) {
+    console.log("Received JSON string:", jsonString);
     const cleanedJSON = this.extractJSON(jsonString);
     
     let parsed;

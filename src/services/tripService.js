@@ -42,6 +42,7 @@ class TripService {
         countryImage: llmTrip.countryImage
       };
     } catch (error) {
+      console.error('Error generating trip:', error);
       if (error instanceof AppError) {
         throw error;
       }

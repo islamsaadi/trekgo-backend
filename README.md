@@ -255,7 +255,6 @@ trekgo-backend/
     ├── services/             # Business logic services
     │   ├── authService.js         # Authentication logic
     │   ├── constraintService.js   # Trip constraint validation
-    │   ├── coordinateService.js   # Smart coordinate handling
     │   ├── groqService.js         # AI/LLM integration
     │   ├── imageService.js        # Destination images
     │   ├── llmService.js          # Route generation orchestration

@@ -14,6 +14,8 @@ class ORSService {
       throw new AppError('Need at least 2 coordinates for route generation', 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
+    console.log(`Fetching route for profile: ${profile}, coordinates: ${JSON.stringify(coordinates)}`);
+
     this.validateCoordinates(coordinates);
     this.validateLandCoordinates(coordinates);
 
@@ -29,7 +31,7 @@ class ORSService {
         },
         body: JSON.stringify({
           coordinates: coordinates,
-          radiuses: Array(coordinates.length).fill(-1),
+          radiuses: Array(coordinates.length).fill(5000),
           options: {
             avoid_features: [],
             avoid_borders: 'none',
@@ -60,6 +62,7 @@ class ORSService {
 
     } catch (error) {
       if (error instanceof AppError) {
+        console.error('AppError:', error.message);
         throw error;
       }
       throw new AppError(ERROR_MESSAGES[ERROR_CODES.EXTERNAL_SERVICE_ERROR], 503, ERROR_CODES.EXTERNAL_SERVICE_ERROR);

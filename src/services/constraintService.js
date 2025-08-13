@@ -57,7 +57,7 @@ class ConstraintService {
   }
 
   validateCycling(trip) {
-    // Cycling: exactly 2 days, each day 10-60km, point-to-point overall
+    // Cycling: exactly 2 days, each day 0.01-60km, point-to-point overall
     const { estimatedDays, routes, tripType } = trip;
 
     if (tripType !== 'cycling') {
@@ -75,8 +75,8 @@ class ConstraintService {
     // Validate each day
     routes.forEach((route) => {
       // Distance validation
-      if (route.distance < 10) {
-        throw new Error(`Day ${route.day}: Distance ${route.distance}km is below 10km minimum`);
+      if (route.distance < 0.01) {
+        throw new Error(`Day ${route.day}: Distance ${route.distance}km is below 0.01km minimum`);
       }
       if (route.distance > 60) {
         throw new Error(`Day ${route.day}: Distance ${route.distance}km exceeds 60km maximum`);

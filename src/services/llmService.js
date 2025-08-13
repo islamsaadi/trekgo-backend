@@ -2,7 +2,6 @@ import groqService from './groqService.js';
 import orsService from './orsService.js';
 import imageService from './imageService.js';
 import constraintService from './constraintService.js';
-import coordinateService from './coordinateService.js';
 import AppError from '../utils/AppError.js';
 import { ERROR_CODES, ERROR_MESSAGES } from '../utils/errorCodes.js';
 
@@ -103,64 +102,11 @@ class LLMService {
 
       } catch (error) {
         console.error(`Error processing route for day ${routeData.day}:`, error);
-        if (error.message.includes('routable point')) {
-          
-          const fixedCoordinates = await this.fixNonRoutableCoordinates(coordinates, cityName, profile);
-          
-          try {
-            const orsRoute = await orsService.fetchRoute({
-              coordinates: fixedCoordinates,
-              profile,
-              cityName
-            });
-
-            const [startLng, startLat] = fixedCoordinates[0];
-            const [endLng, endLat] = fixedCoordinates[fixedCoordinates.length - 1];
-
-            routes.push({
-              day: routeData.day,
-              distance: orsRoute.distance,
-              duration: orsRoute.duration,
-              startPoint: { lat: startLat, lng: startLng, name: routeData.startPoint.name },
-              endPoint: { lat: endLat, lng: endLng, name: routeData.endPoint.name },
-              waypoints: fixedCoordinates.slice(1, -1).map((coord, i) => ({
-                lat: coord[1],
-                lng: coord[0],
-                name: (routeData.waypoints && routeData.waypoints[i] && routeData.waypoints[i].name) || `Waypoint ${i + 1}`
-              })),
-              coordinates: orsRoute.coordinates,
-              geometry: orsRoute.geometry,
-              description: routeData.description,
-              elevation: orsRoute.summary,
-              instructions: orsRoute.instructions || []
-            });
-          } catch (retryError) {
-            throw new AppError(ERROR_MESSAGES[ERROR_CODES.TRIP_GENERATION_FAILED], 500, ERROR_CODES.TRIP_GENERATION_FAILED);
-          }
-
-        } else {
-          throw error;
-        }
+        throw new AppError(ERROR_MESSAGES[ERROR_CODES.TRIP_GENERATION_FAILED], 500, ERROR_CODES.TRIP_GENERATION_FAILED);
       }
     }
 
     return routes;
-  }
-
-  async fixNonRoutableCoordinates(coordinates, cityName, profile) {
-    const fixedCoordinates = [];
-    
-    for (const coord of coordinates) {
-      try {
-        const routableCoord = await coordinateService.findRoutableCoordinates(coord, cityName, profile);
-        fixedCoordinates.push(routableCoord);
-      } catch (error) {
-        const cityCenter = await coordinateService.geocodeCityCenter(cityName);
-        fixedCoordinates.push(cityCenter);
-      }
-    }
-    
-    return fixedCoordinates;
   }
 
   async processTrekRoutes(routes, llmRouteData) {
@@ -293,8 +239,8 @@ class LLMService {
 
     // Validate each day's distance
     for (const route of routes) {
-      if (route.distance < 10 || route.distance > 60) {
-        throw new Error(`Day ${route.day}: Distance ${route.distance}km is outside 10-60km range`);
+      if (route.distance < 0.01 || route.distance > 60) {
+        throw new Error(`Day ${route.day}: Distance ${route.distance}km is outside 0.01-60km range`);
       }
     }
 
