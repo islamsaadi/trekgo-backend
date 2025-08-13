@@ -1,3 +1,6 @@
+import AppError from '../utils/AppError.js';
+import { ERROR_CODES, ERROR_MESSAGES } from '../utils/errorCodes.js';
+
 class ORSService {
   constructor() {
     this.apiKey = process.env.ORS_API_KEY;
@@ -6,15 +9,12 @@ class ORSService {
     this.timeout = 30000;
   }
 
-  async fetchRoute({ coordinates, profile = 'foot-wlaking', cityName = null }) {
+  async fetchRoute({ coordinates, profile = 'foot-walking', cityName = null }) {
     if (!Array.isArray(coordinates) || coordinates.length < 2) {
-      throw new Error('Need at least 2 coordinates for route generation');
+      throw new AppError('Need at least 2 coordinates for route generation', 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
-    // Validate coordinates first
     this.validateCoordinates(coordinates);
-    
-    // Additional validation for water waypoints
     this.validateLandCoordinates(coordinates);
 
     const url = `${this.baseUrl}/${profile}/geojson`;
@@ -29,6 +29,7 @@ class ORSService {
         },
         body: JSON.stringify({
           coordinates: coordinates,
+          radiuses: Array(coordinates.length).fill(-1),
           options: {
             avoid_features: [],
             avoid_borders: 'none',
@@ -47,26 +48,21 @@ class ORSService {
           throw new Error(`ORS API error: ${response.status} – ${errorText}`);
         }
         
-        // Provide specific error messages for common issues
         if (errorData.error?.code === 2010) {
-          if(cityName) {
-            const baseCoords = await this.geocode(cityName);
-            const [baseLng, baseLat] = baseCoords;
-            this.fetchRoute(baseCoords, profile, null);
-          } else {
-            throw new Error(`No routable point found: ${errorData.error.message}. The coordinates may be in water, buildings, or inaccessible terrain. Please use coordinates on actual roads, paths, or trails on land.`);
-          }
+          throw new AppError(`Could not find routable point within routing radius. Coordinates may be in water, buildings, or inaccessible terrain: ${errorData.error.message}`, 400, ERROR_CODES.VALIDATION_ERROR);
         }
         
-        throw new Error(`ORS API error: ${response.status} – ${errorData.error?.message || errorText}`);
+        throw new AppError(`ORS API error: ${response.status} – ${errorData.error?.message || errorText}`, 503, ERROR_CODES.EXTERNAL_SERVICE_ERROR);
       }
 
       const data = await response.json();
       return this.processRouteResponse(data, profile);
 
     } catch (error) {
-      console.error(`ORS routing failed:`, error.message);
-      throw error;
+      if (error instanceof AppError) {
+        throw error;
+      }
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.EXTERNAL_SERVICE_ERROR], 503, ERROR_CODES.EXTERNAL_SERVICE_ERROR);
     }
   }
 

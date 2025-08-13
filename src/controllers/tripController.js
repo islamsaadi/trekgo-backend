@@ -5,10 +5,12 @@ class TripController {
   async generateTrip(req, res, next) {
     try {
       const { destination, tripType } = req.body;
-      if (!destination || !tripType) return res.status(400).json({ success: false, error: 'Destination and tripType are required' });
       const trip = await tripService.generateTrip(destination, tripType);
       res.json({ success: true, data: trip });
-    } catch (e) { next(e); }
+    } catch (e) { 
+      console.error('Error generating trip:', e);
+      next(e); 
+    }
   }
 
   async saveTrip(req, res, next) {
@@ -16,25 +18,29 @@ class TripController {
       const userId = req.user.id;
       const saved = await tripService.saveTrip(userId, req.body);
       res.status(201).json({ success: true, data: saved });
-    } catch (e) { next(e); }
+    } catch (e) { 
+      next(e); 
+    }
   }
 
   async deleteTrip(req, res, next) {
     try {
       await tripService.deleteTrip(req.user.id, req.params.id);
       res.json({ success: true, data: { id: req.params.id } });
-    } catch (e) { next(e); }
+    } catch (e) { 
+      next(e); 
+    }
   }
 
   async getTrip(req, res, next) {
     try {
       const trip = await tripService.getTripById(req.user.id, req.params.id);
-      if (!trip) return res.status(404).json({ success: false, error: 'Trip not found' });
-      // Attach fresh 3-day forecast at view time (tomorrow onward)
       const fresh = await weatherService.getWeatherForTrip(trip);
       trip.weatherForecast = fresh;
       res.json({ success: true, data: trip });
-    } catch (e) { next(e); }
+    } catch (e) { 
+      next(e); 
+    }
   }
 
   async getUserTrips(req, res, next) {

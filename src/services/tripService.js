@@ -2,70 +2,69 @@ import Trip from '../models/Trip.js';
 import llmService from './llmService.js';
 import weatherService from './weatherService.js';
 import constraintService from './constraintService.js';
+import AppError from '../utils/AppError.js';
+import { ERROR_CODES, ERROR_MESSAGES } from '../utils/errorCodes.js';
 
 class TripService {
   async generateTrip(destination, tripType) {
-    // Validate inputs
     if (!destination || !tripType) {
-      throw new Error('Destination and tripType are required');
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.VALIDATION_ERROR], 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
-    // Generate full trip via LLM + ORS 
-    const llmTrip = await llmService.generateRoute(destination, tripType);
+    try {
+      const llmTrip = await llmService.generateRoute(destination, tripType);
 
-    // Strict validation - will throw if invalid
-    if (tripType === 'trek') {
-      constraintService.validateTrek(llmTrip);
-    } else {
-      constraintService.validateCycling(llmTrip);
+      if (tripType === 'trek') {
+        constraintService.validateTrek(llmTrip);
+      } else {
+        constraintService.validateCycling(llmTrip);
+      }
+
+      const routesWithWeather = await this.addWeatherToRoutes(llmTrip.routes);
+
+      const firstRoute = llmTrip.routes[0];
+      const { lat, lng } = firstRoute.startPoint;
+      const threeDayForecast = await weatherService.getWeatherForecast(lat, lng);
+
+      return {
+        destination: llmTrip.destination,
+        city: llmTrip.city,
+        tripType: llmTrip.tripType,
+        totalDistance: llmTrip.totalDistance,
+        estimatedDuration: llmTrip.estimatedDuration,
+        estimatedDays: llmTrip.estimatedDays,
+        routes: routesWithWeather,
+        weatherForecast: threeDayForecast,
+        highlights: llmTrip.highlights,
+        difficulty: llmTrip.difficulty,
+        equipment: llmTrip.equipment,
+        tips: llmTrip.tips,
+        countryImage: llmTrip.countryImage
+      };
+    } catch (error) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.TRIP_GENERATION_FAILED], 500, ERROR_CODES.TRIP_GENERATION_FAILED);
     }
-
-    // Get weather forecast for next 3 days starting tomorrow
-    const routesWithWeather = await this.addWeatherToRoutes(llmTrip.routes);
-
-    // Get the 3-day weather forecast from the weather service directly for trip-level forecast
-    const firstRoute = llmTrip.routes[0];
-    const { lat, lng } = firstRoute.startPoint;
-    const threeDayForecast = await weatherService.getWeatherForecast(lat, lng);
-
-    // Return with exact frontend structure
-    return {
-      destination: llmTrip.destination,
-      city: llmTrip.city,
-      tripType: llmTrip.tripType,
-      totalDistance: llmTrip.totalDistance,
-      estimatedDuration: llmTrip.estimatedDuration,
-      estimatedDays: llmTrip.estimatedDays,
-      routes: routesWithWeather,
-      weatherForecast: threeDayForecast,
-      highlights: llmTrip.highlights,
-      difficulty: llmTrip.difficulty,
-      equipment: llmTrip.equipment,
-      tips: llmTrip.tips,
-      countryImage: llmTrip.countryImage
-    };
   }
 
   async addWeatherToRoutes(routes) {
-    // Get weather forecast once for the starting location
     const firstRoute = routes[0];
     if (!firstRoute) {
-      throw new Error('No routes provided for weather enrichment');
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.VALIDATION_ERROR], 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
     const { lat, lng } = firstRoute.startPoint;
     
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      throw new Error(`Invalid coordinates for weather: ${lat}, ${lng}`);
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.VALIDATION_ERROR], 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
     try {
-      // Get 3-day forecast starting tomorrow
       const forecast = await weatherService.getWeatherForecast(lat, lng);
       
-      // Enrich routes with weather data
       const enriched = routes.map((dayRoute, index) => {
-        // Assign weather forecast for the specific day (starting tomorrow)
         const dayForecast = forecast[index] || null;
         
         return {
@@ -77,14 +76,16 @@ class TripService {
       return enriched;
 
     } catch (error) {
-      throw new Error(`Weather service failed: ${error.message}`);
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.EXTERNAL_SERVICE_ERROR], 503, ERROR_CODES.EXTERNAL_SERVICE_ERROR);
     }
   }
 
   async saveTrip(userId, tripData) {
-    if (!userId) throw new Error('User ID is required');
+    if (!userId) {
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.VALIDATION_ERROR], 400, ERROR_CODES.VALIDATION_ERROR);
+    }
     if (!tripData.destination || !tripData.tripType || !Array.isArray(tripData.routes)) {
-      throw new Error('Missing required trip data fields');
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.VALIDATION_ERROR], 400, ERROR_CODES.VALIDATION_ERROR);
     }
 
     tripData.userId = userId;
@@ -99,20 +100,20 @@ class TripService {
   async deleteTrip(userId, id) {
     const result = await Trip.deleteOne({ _id: id, userId });
     if (!result.deletedCount) {
-      throw new Error('Trip not found or not authorized');
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.TRIP_NOT_FOUND], 404, ERROR_CODES.TRIP_NOT_FOUND);
     }
   }
 
   async getTripById(userId, id) {
     const trip = await Trip.findOne({ _id: id, userId });
-    if (!trip) return null;
+    if (!trip) {
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.TRIP_NOT_FOUND], 404, ERROR_CODES.TRIP_NOT_FOUND);
+    }
     
-    // Add fresh weather data when retrieving
     try {
       const freshWeatherData = await weatherService.getWeatherForTrip(trip);
       const tripObj = trip.toObject();
       
-      // Update routes with fresh weather
       tripObj.routes = tripObj.routes.map((route, index) => ({
         ...route,
         weatherForecast: freshWeatherData[index] ? [freshWeatherData[index]] : []
@@ -120,7 +121,6 @@ class TripService {
       
       return tripObj;
     } catch (error) {
-      console.error('Weather update failed:', error);
       return trip;
     }
   }

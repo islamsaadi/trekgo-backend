@@ -1,5 +1,7 @@
 import User from '../models/User.js';
 import tokenManager from '../utils/tokenManager.js';
+import AppError from '../utils/AppError.js';
+import { ERROR_CODES, ERROR_MESSAGES } from '../utils/errorCodes.js';
 
 class AuthService {
 
@@ -8,7 +10,7 @@ class AuthService {
     
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      throw new Error('Email already registered');
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.DUPLICATE_EMAIL], 409, ERROR_CODES.DUPLICATE_EMAIL);
     }
 
     const user = new User({ name, email, password });
@@ -29,18 +31,18 @@ class AuthService {
     const user = await User.findOne({ email }).select('+password');
     
     if (!user) {
-      throw new Error('Invalid credentials');
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.INVALID_CREDENTIALS], 401, ERROR_CODES.INVALID_CREDENTIALS);
     }
 
     if (user.isAccountLocked()) {
-      throw new Error('Account temporarily locked due to multiple failed attempts');
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.ACCOUNT_LOCKED], 423, ERROR_CODES.ACCOUNT_LOCKED);
     }
 
     const isPasswordValid = await user.comparePassword(password);
     
     if (!isPasswordValid) {
       await user.incrementFailedAttempts();
-      throw new Error('Invalid credentials');
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.INVALID_CREDENTIALS], 401, ERROR_CODES.INVALID_CREDENTIALS);
     }
 
     await user.resetFailedAttempts();
@@ -60,7 +62,7 @@ class AuthService {
     const user = await User.findById(userId);
     
     if (!user) {
-      throw new Error('User not found');
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.USER_NOT_FOUND], 404, ERROR_CODES.USER_NOT_FOUND);
     }
 
     user.refreshTokens = user.refreshTokens.filter(
@@ -75,7 +77,7 @@ class AuthService {
       const decoded = await tokenManager.verifyAccessToken(accessToken);
       return decoded;
     } catch (error) {
-      throw new Error('Invalid access token');
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.INVALID_TOKEN], 401, ERROR_CODES.INVALID_TOKEN);
     }
   }
   
@@ -84,7 +86,7 @@ class AuthService {
     const user = await User.findById(decoded.id);
 
     if (!user) {
-      throw new Error('User not found');
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.USER_NOT_FOUND], 404, ERROR_CODES.USER_NOT_FOUND);
     }
 
     const tokenExists = user.refreshTokens.some(
@@ -92,7 +94,7 @@ class AuthService {
     );
 
     if (!tokenExists) {
-      throw new Error('Invalid refresh token');
+      throw new AppError(ERROR_MESSAGES[ERROR_CODES.INVALID_REFRESH_TOKEN], 401, ERROR_CODES.INVALID_REFRESH_TOKEN);
     }
 
     user.refreshTokens = user.refreshTokens.filter(
